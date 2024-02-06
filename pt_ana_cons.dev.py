@@ -49,31 +49,28 @@ def load_cons_cfg(cfg_fp) -> dict:
     # Config Data Structure:
     #
     # cons_cfg = {
-    #   'p': {
-    #           'type1:group1': {path1: path_obj1, path2: path_obj2, ...}, 
-    #           'type2:*':      {path3: path_obj3, path4: path_obj4, ...},
-    #           ... 
-    #        },
+    #   'p': {'type1:group1': {path1: path_obj1, path2: path_obj2, ...}, 
+    #         'type2:*':      {path3: path_obj3, path4: path_obj4, ...},
+    #           ... },
     #
-    #   'g': {
-    #           'type1': {group1: group_obj1, group2: group_obj2, ...},
-    #           'type2': {group3: group_obj3, group4: group_obj4, ...},
-    #           ...
-    #        },
+    #   'g': {'type1': {group1: group_obj1, group2: group_obj2, ...},
+    #         'type2': {group3: group_obj3, group4: group_obj4, ...},
+    #           ... },
     #
-    #   'ug': {
-    #           'type1:group1': {path1: path_obj1, path2: path_obj2, ...}, 
-    #           'type2:*':      {path3: path_obj3, path4: path_obj4, ...},
-    #           ... 
-    #         },
+    #   'ug': {'type1:group1': {path1: path_obj1, path2: path_obj2, ...}, 
+    #          'type2:*':      {path3: path_obj3, path4: path_obj4, ...},
+    #           ... },
     # }
     #
-    attr = {}
+    attr = {
+        'group_column_width': ('grp_col_w', 50)
+    }
+
     cons_cfg = dict(attr.values())
     cons_cfg.update({
-        'grp_col_w': 50,
         'p': {}, 'g': {}, 'ug': {}
     })
+
     if cfg_fp is None:
         return cons_cfg
 
@@ -84,23 +81,29 @@ def load_cons_cfg(cfg_fp) -> dict:
                     key, value, *_ = line.split(':')
                     key, value = key.strip(), value.strip()
                     if key in attr:
-                        if value.lower() == str(not attr[key][1]).lower():
-                            cons_cfg[attr[key][0]] = not attr[key][1]
-                        else:
-                            cons_cfg[attr[key][0]] = attr[key][1]
-                    elif key == 'group_column_width':
-                        cons_cfg['grp_col_w'] = int(value)
+                        key2, df_val = attr[key]
+                        if (ktype:=type(df_val)) is bool:
+                            if value.lower() == str(not df_val).lower():
+                                cons_cfg[key2] = not df_val
+                            else:
+                                cons_cfg[key2] = df_val
+                        elif ktype is int:
+                            cons_cfg[key2] = int(value)
+                        elif ktype is float:
+                            cons_cfg[key2] = float(value)
+                        raise SyntaxError(
+                                f"Attributes - unsupported data type ({ktype}).")
                     elif key == 'p':
                         tag, *cmd_src = line[2:].split()
                         type_, group, path, rid = tag.split(':')
                         gid = ':'.join((type_, group))
-                        grp_dict = cons_cfg['p'].setdefault(gid, {})
-                        path_obj = grp_dict.setdefault(
-                                path, ConsPathOp(path=path, 
+                        pdict = cons_cfg['p'].setdefault(gid, {})
+                        path_obj = pdict.setdefault(
+                                path, ConsPathOp(re=re.compile(path), 
                                                  l=[(0, 's:0.0')], 
                                                  r=[(0, 's:0.0')]))
                         for cmd in cmd_src:
-                            if rid == 'l' or rid == 'a':
+                            if rid in {'l', 'a'}:
                                 if cmd.startswith('s'):
                                     path_obj.l[0] = (fno, cmd)
                                 else:
@@ -113,29 +116,28 @@ def load_cons_cfg(cfg_fp) -> dict:
                     elif key == 'g':
                         tag, *cmd_src = line[2:].split()
                         type_, group, rid = tag.split(':')
-                        type_dict = cons_cfg['g'].setdefault(type_, {})
-                        grp_obj = type_dict.setdefault(
-                                    group, ConsGroupOp(group=group))
+                        gdict = cons_cfg['g'].setdefault(type_, {})
+                        grp_obj = gdict.setdefault(
+                                    group, ConsGroupOp(re=re.compile(group)))
                         for cmd in cmd_src:
                             grp_obj[rid].append((fno, cmd))
                     elif key == 'ug':
                         tag, cmd = line[3:].split()
                         type_, group, path = tag.split(':')
                         gid = ':'.join((type_, group))
-                        grp_dict = cons_cfg['ug'].setdefault(gid, {})
+                        ugdict = cons_cfg['ug'].setdefault(gid, {})
                         ugroup, is_rsv = cmd.split(':')
                         is_rsv = True if is_rsv.lower() == 'y' else False
-                        grp_dict[path] = ConsUGroupOp(
-                                            fno=fno,
-                                            path=path,
-                                            ugroup=ugroup,
-                                            is_rsv=is_rsv
-                                         )
+                        ugdict[path] = ConsUGroupOp(fno=fno,
+                                                    re=re.compile(path),
+                                                    ugroup=ugroup,
+                                                    is_rsv=is_rsv)
                 except SyntaxError:
                     raise SyntaxError(f"config syntax error (ln:{fno})")
 
     # import pdb; pdb.set_trace()  # debug
     return cons_cfg
+
 
 def parse_grp_cmd(ln_no: int, grp_list: list, cmd_list: list):
     """Parse group command"""  #{{{
@@ -237,10 +239,10 @@ def report_cons_summary(rpt_fps: list, cfg_fp: str):
     Report the summary of the command 'report_constraint'
     """
     cons_cfg = load_cons_cfg(cfg_fp)
+    import pdb; pdb.set_trace()
     cons_rpt = ConsReport(cons_cfg)
     cons_rpt.parse_report(rpt_fps)
-    print(cons_rpt.cons_tables[0][1])
-    import pdb; pdb.set_trace()
+    # print(cons_rpt.cons_tables[0][1])
 
     IDLE, POS, VT1, VT2 = range(4)
     is_multi = len(rpt_fps) > 1

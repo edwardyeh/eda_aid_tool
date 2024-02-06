@@ -19,10 +19,9 @@ import pandas as pd
 
 @dataclass (slots=True)
 class ConsPathOp:
-    path: re.Pattern = None
+    re: re.Pattern = None
     l: list = field(default_factory=list)  # cmd: [fno, opteration]
     r: list = field(default_factory=list)
-
     def __getitem__(self, key):
         if key == 'l': return self.l
         if key == 'r': return self.r
@@ -30,11 +29,10 @@ class ConsPathOp:
 
 @dataclass (slots=True)
 class ConsGroupOp:
-    group: re.Pattern = None
+    re: re.Pattern = None
     l: list = field(default_factory=list)  # cmd: [fno, opteration]
     r: list = field(default_factory=list)
     d: list = field(default_factory=list)
-
     def __getitem__(self, key):
         if key == 'l': return self.l
         if key == 'r': return self.r
@@ -44,7 +42,7 @@ class ConsGroupOp:
 @dataclass (slots=True)
 class ConsUGroupOp:
     fno: int = 0
-    path: re.Pattern = None
+    re: re.Pattern = None
     ugroup: str = None
     is_rsv: bool = None
 
@@ -53,9 +51,9 @@ class ConsReport:
     """
     Constraint violation report parser.
 
-    Attributes
-    ----------
-    cons_tables : a list of constraint tables.
+    Variables
+    ---------
+    cons_tables  a list of constraint tables.
     """
 
     _path_hd = ('type', 'group', 'pin', 'sc', 'arr', 'req', 'slk', 'attr',
