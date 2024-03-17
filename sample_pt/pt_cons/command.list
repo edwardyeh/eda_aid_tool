@@ -6,7 +6,7 @@ group_column_width: <size>              # set group column width
 === Path Choose (Violation Report) =========================    
 
 p:<type>:<group>:<path>:<rid>           # use regular expression to choose path
-                                          report ID <rid> = l-left, r-right, a-all
+                                            - report ID <rid> : l-left, r-right, a-all
 
 === Path Operation =========================================
 
@@ -25,7 +25,7 @@ p:<type>:<group>:<path>:<rid>           # use regular expression to choose path
 === Group Choose (Summary Report) ==========================
 
 g:<type>:<group>:<rid>                  # use regular expression to choose group
-                                          report ID <rid> = l-left, r-right, d-diff
+                                            - report ID <rid> : l-left, r-right, d-diff
 
 === Group Operation (Summary) ==============================
 
@@ -38,5 +38,4 @@ g:<type>:<group>:<rid>                  # use regular expression to choose group
 === User Group (Violation Report) ==========================
 
 ug:<type>:<group>:<path> <user_group>:<is_reserve>
-
 

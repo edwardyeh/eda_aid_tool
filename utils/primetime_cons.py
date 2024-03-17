@@ -11,15 +11,15 @@ import gzip
 import os
 import re
 from dataclasses import dataclass, field
-from enum import IntEnum
+from re import Pattern as RePat
+from typing import Any
 
-import numpy as np
-import pandas as pd
+from simpletools.text import (Align, Array, Border, Index, SimpleTable)
 
 
 @dataclass (slots=True)
 class ConsPathOp:
-    re: re.Pattern = None
+    re: RePat = None
     l: list = field(default_factory=list)  # cmd: [fno, opteration]
     r: list = field(default_factory=list)
     def __getitem__(self, key):
@@ -29,7 +29,7 @@ class ConsPathOp:
 
 @dataclass (slots=True)
 class ConsGroupOp:
-    re: re.Pattern = None
+    re: RePat = None
     l: list = field(default_factory=list)  # cmd: [fno, opteration]
     r: list = field(default_factory=list)
     d: list = field(default_factory=list)
@@ -42,37 +42,42 @@ class ConsGroupOp:
 @dataclass (slots=True)
 class ConsUGroupOp:
     fno: int = 0
-    re: re.Pattern = None
+    re: RePat = None
     ugroup: str = None
-    is_rsv: bool = None
+    is_og_rsv: bool = None
 
 
 class ConsReport:
     """
     Constraint violation report parser.
-
-    Variables
-    ---------
-    cons_tables  a list of constraint tables.
     """
 
-    _path_hd = ('type', 'group', 'pin', 'sc', 'arr', 'req', 'slk', 'attr',
-                'off', 'is_rsv', 'is_del', 'ugroup', 'i_ug_del')
+    _path_hd = (('type', 'Violation.Type'), ('group', 'Path.Group'), 
+                ('pin', 'Pin'), ('sc', 'Scenario'), ('arr', 'Arrival.Time'), 
+                ('req', 'Required.Time'), ('slk', 'Slack'), 
+                ('attr', 'Attributes'), ('off', 'Slack.Offset'), 
+                ('is_rsv', 'Reserve?'), ('is_del', 'Delete?'), 
+                ('ugroup', 'User.Group'), 
+                ('is_og_rsv', 'Original.Group.Reserve?'))
 
-    _sum_hd = ('group', 'l:wns', 'l:tns', 'l:nvp', 'r:wns', 'r:tns', 'r:nvp', 
-               'd:wns', 'd:tns', 'd:nvp', 'comm')
+    _sum_hd = (('group', 'Group'), 
+               ('lwns', 'WNS(L)'), ('ltns', 'TNS(L)'), ('lnvp', 'NVP(L)'),
+               ('rwns', 'WNS(R)'), ('rtns', 'TNS(R)'), ('rnvp', 'NVP(R)'),
+               ('dwns', 'WNS(D)'), ('dtns', 'TNS(D)'), ('dnvp', 'NVP(D)'),
+               ('comm', ''))
 
-    _cons_type_set = {
-        'max_delay/setup', 'min_delay/hold', 'recovery', 'removal', 
-        'clock_gating_setup', 'clock_gating_hold', 
-        'max_capacitance', 'min_capacitance', 
-        'max_transition', 'min_transition',
-        'clock_tree_pulse_width', 'sequential_tree_pulse_width', 
-        'sequential_clock_min_period'
-    }
+    _grp_cons = ('max_delay/setup', 'min_delay/hold')
+    _nogrp_cons = ('recovery', 'removal', 
+                   'clock_gating_setup', 'clock_gating_hold', 
+                   'max_capacitance', 'min_capacitance', 
+                   'max_transition', 'min_transition')
+    _clk_cons = ('clock_tree_pulse_width', 'sequential_tree_pulse_width', 
+                 'sequential_clock_min_period')
 
-    _path_op = set(('r:slk', 'd:slk'))
-    _group_op = set(('w:wns', 'w:tns', 'w:nvp'))
+    _cons_type_set = set(_grp_cons + _nogrp_cons + _clk_cons)
+
+    _path_op = {'r:slk', 'd:slk'}
+    _group_op = {'w:wns', 'w:tns', 'w:nvp'}
 
     _cmp_op = {
         '>' : lambda a, b: a > b,
@@ -82,61 +87,54 @@ class ConsReport:
         '<=': lambda a, b: a <= b
     }
 
-    def __init__(self, cons_cfg: dict):
+    def __init__(self, gcol_w: int=0, path_cfg: dict=None, grp_cfg: dict=None, 
+                 ugrp_cfg: dict=None):
         """
-        Arguments
-        ---------
-        cons_cfg : the configuration dictionary.
+        Parameters
+        ----------
+        gcol_w : int, optional
+            The column width of the path group column.
+        path_cfg : dict, optional
+            Configurations for paths.
+        grp_cfg : dict, optional
+            Configurations for path groups.
+        ugrp_cfg : dict, optional
+            Configurations for user-defined path groups.
         """
-        self.update_cons_cfg(cons_cfg)
+        ### attributes
+        self.gcol_w = gcol_w
+        self.path_cfg = {} if path_cfg is None else copy.deepcopy(path_cfg)
+        self.grp_cfg = {} if grp_cfg is None else copy.deepcopy(grp_cfg)
+        self.ugrp_cfg = {} if ugrp_cfg is None else copy.deepcopy(ugrp_cfg)
+        self._parse_cfg_cmd()
+        ### data
         self.cons_tables = []
+        self.sum_tables = {}
 
-    def update_cons_cfg(self, cons_cfg: dict):
+    def _parse_cfg_cmd(self):
         """
-        Update configurations.
-
-        Arguments
-        ---------
-        cons_cfg : the configuration dictionary.
+        Parsing config commands.
         """
-        self._grp_col_w = cons_cfg['grp_col_w']
+        for gtag, gdict in self.path_cfg.items():
+            for ptag, pobj in gdict.items():
+                for i, cmd in enumerate(pobj.l):
+                    pobj.l[i] = (cmd[0], self._parse_path_cmd(cmd))
+                for i, cmd in enumerate(pobj.r):
+                    pobj.r[i] = (cmd[0], self._parse_path_cmd(cmd))
 
-        self._path_cfg = copy.deepcopy(cons_cfg['p'])
-        for gtag, grp_dict in self._path_cfg.items():
-            for ptag, path_obj in grp_dict.items():
-                path_obj.path = re.compile(path_obj.path)
-                if path_obj.l[0][0] == 0:
-                    del path_obj.l[0]
-                if path_obj.r[0][0] == 0:
-                    del path_obj.r[0]
-                for i, cmd in enumerate(path_obj.l):
-                    path_obj.l[i] = (cmd[0], self._parse_path_cmd(cmd))
-                for i, cmd in enumerate(path_obj.r):
-                    path_obj.r[i] = (cmd[0], self._parse_path_cmd(cmd))
-                grp_dict[ptag] = path_obj
-            self._path_cfg[gtag] = grp_dict
+        for ttag, tdict in self.grp_cfg.items():
+            for gtag, gobj in tdict.items():
+                for i, cmd in enumerate(gobj.l):
+                    gobj.l[i] = (cmd[0], self._parse_group_cmd(cmd))
+                for i, cmd in enumerate(gobj.r):
+                    gobj.r[i] = (cmd[0], self._parse_group_cmd(cmd))
+                for i, cmd in enumerate(gobj.d):
+                    gobj.d[i] = (cmd[0], self._parse_group_cmd(cmd))
 
-        self._group_cfg = copy.deepcopy(cons_cfg['g'])
-        for ttag, type_dict in self._group_cfg.items():
-            for gtag, grp_obj in type_dict.items():
-                grp_obj.group = re.compile(grp_obj.group)
-                for i, cmd in enumerate(grp_obj.l):
-                    grp_obj.l[i] = (cmd[0], self._parse_group_cmd(cmd))
-                for i, cmd in enumerate(grp_obj.r):
-                    grp_obj.r[i] = (cmd[0], self._parse_group_cmd(cmd))
-                for i, cmd in enumerate(grp_obj.d):
-                    grp_obj.d[i] = (cmd[0], self._parse_group_cmd(cmd))
-                type_dict[gtag] = grp_obj
-            self._group_cfg[ttag] = type_dict
-
-        self._ugroup_cfg = copy.deepcopy(cons_cfg['ug'])
-        for gtag, grp_dict in self._ugroup_cfg.items():
-            for ptag, path_obj in grp_dict.items():
-                path_obj.path = re.compile(path_obj.path)
-                grp_dict[ptag] = path_obj
-            self._ugroup_cfg[gtag] = grp_dict
-
-    def _parse_path_cmd(self, cmd: tuple) -> tuple:
+    def _parse_path_cmd(self, cmd: tuple[str, str]) -> tuple[Any, ...]:
+        """
+        Parsing config commands (path).
+        """
         no, op = cmd
         if op.startswith('s:'):
             return 's', float(op.split(':')[1])
@@ -150,7 +148,10 @@ class ConsReport:
             return op, True
         raise SyntaxError(f"Error: config syntax error (ln:{no})")
 
-    def _parse_group_cmd(self, cmd: tuple) -> tuple:
+    def _parse_group_cmd(self, cmd: tuple[str, str]) -> tuple[Any, ...]:
+        """
+        Parsing config commands (path group).
+        """
         no, op = cmd
         if op.startswith('w:'):
             op_list = re.fullmatch(r"(\w:\w{3})([><=]{1,2})(.+)", op)
@@ -160,16 +161,17 @@ class ConsReport:
             return type_, tar, op_list[2], float(op_list[3])
         raise SyntaxError(f"Error: config syntax error (ln:{no})")
 
-    def parse_report(self, rpt_fps: list):
+    def parse_report(self, rpt_fps: list[str]):
         """
         Parse the timing report.
 
-        Arguments
-        ---------
-        rpt_fps : a list of the file path of constraint reports. (max number: 2)
+        Parameters
+        ----------
+        rpt_fps : list[str]
+            A list of the file path of constraint reports. (max number: 2)
         """
         st_idle, st_prefix, st_parsing = range(3)
-        grp_re = re.compile(r"(?P<t>[\w\/]+)(?: +\('(?P<g>[\w\/]+)'\sgroup\))?")
+        grp_re = re.compile(r"(?P<t>[\w\/]+)(?:\s+\('(?P<g>[\w\/]+)'\sgroup\))?")
 
         for fid, rpt_fp in enumerate(rpt_fps[:2]):
             if os.path.splitext(rpt_fp)[1] == '.gz':
@@ -177,9 +179,8 @@ class ConsReport:
             else:
                 fp = open(rpt_fp)
 
-            table = pd.DataFrame(np.full((128, len(self._path_hd)), np.NaN),
-                                 columns=self._path_hd, dtype='object')
-            self.cons_tables.append([0, table]) 
+            table = SimpleTable(self._path_hd)
+            self.cons_tables.append(table) 
 
             stage, is_dmsa = st_idle, False
             line, fno = fp.readline(), 1
@@ -201,26 +202,37 @@ class ConsReport:
                         fno = self._parse_group(
                                 fp, fid, fno, m['t'], group, is_dmsa)
                 line, fno = fp.readline(), fno+1
-
-            row_cnt, table = self.cons_tables[fid]
-            if row_cnt < table.shape[0]:
-                table = table.drop(range(row_cnt, table.shape[0]))
-            self.cons_tables[fid][1] = table
             fp.close()
+
+        self._update_sum_table()
 
     def _parse_group(self, fp, fid: int, fno: int, gtype: str, group: str, 
                      is_dmsa: bool) -> int:
         """
         Parsing a violation group.
 
+        Parameters
+        ----------
+        fp : file
+            File point of the report.
+        fid : int
+            File id of the report.
+        fno : int
+            Current line number of the report (before parsing).
+        gtype : str    
+            Constraint type.
+        group : str
+            Path group name
+        is_dmsa : bool 
+            If current report is a DMSA report?
+
         Returns
         -------
-        fno : the current line number of the report.
+        fno : int
+            Current line number of the report (after parsing).
         """
         is_start, is_rec = False, False
-        attr_re = re.compile(r"\(?(.*?)\)?")
-        row_cnt = self.cons_tables[fid][0]
-        table_v = self.cons_tables[fid][1].values
+        table = self.cons_tables[fid]
         content = []
         line, fno = fp.readline(), fno+1
 
@@ -228,35 +240,39 @@ class ConsReport:
             toks = line.strip().split()
             if is_start:
                 content.extend(toks)
-                print(f"content: {content}")
-
             if not is_start:
                 if toks and toks[0][0] == '-':
                     is_start = True
             elif not toks:
                 break
             elif content[-1] == '(VIOLATED)':
-                print("debug: check1")
-                is_rec, cid = True, -2
+                is_rec, cid, is_pulse_chk = True, -2, False
             elif len(content) >= 2 and content[-2] == '(VIOLATED)':
-                print("debug: check2")
-                is_rec, cid = True, -3
+                is_rec, cid, is_pulse_chk = True, -3, True
 
             if is_rec:
                 slk, cid = float(content[cid]), cid-1
                 arr, cid = float(content[cid]), cid-1
                 req, cid = float(content[cid]), cid-1 
                 sc, cid = (content[cid], cid-1) if is_dmsa else ("", cid)
-                attr = attr_re.fullmatch(' '.join(content[1:cid+1]))[1]
+                if is_pulse_chk:
+                    pulse_type = ' '.join(content[1:cid+1])[1:-1].split()[-1]
+                    attr = f"{content[-1]},{pulse_type}"
+                else:
+                    attr = ''
                 pin = content[0]
                 is_rec, content = False, []
+                key1 = f"{gtype}:{group}"
+                key2 = f"{gtype}:"
 
                 ## path config check
+                # import pdb; pdb.set_trace()
                 off, is_rsv, is_del = 0.0, False, False
-                for path_obj in self._path_cfg.get(group, {}).values():
-                    if path_obj.path.fullmatch(pin):
+                for pobj in (list(self.path_cfg.get(key1, {}).values()) + 
+                             list(self.path_cfg.get(key2, {}).values())):
+                    if pobj.re.fullmatch(pin):
                         rid = 'l' if fid == 0 else 'r'
-                        for _, cmd in path_obj[rid]:
+                        for _, cmd in pobj[rid]:
                             if cmd[0] == 's':
                                 slk = slk + cmd[1]
                                 off = cmd[1] 
@@ -273,35 +289,113 @@ class ConsReport:
                         break
 
                 ## user group config check
-                ugroup, is_ug_del = None, False
-                for path_obj in self._ugroup_cfg.get(group, {}).values():
-                    if path_obj.path.fullmatch(pin):
-                        ugroup = path_obj.ugroup
-                        is_ug_del = path_obj.is_ug_del
+                ugroup, is_og_rsv = None, False
+                for pobj in (list(self.ugrp_cfg.get(key1, {}).values()) +
+                             list(self.ugrp_cfg.get(key2, {}).values())):
+                    if pobj.re.fullmatch(pin):
+                        ugroup = pobj.ugroup
+                        is_og_rsv = pobj.is_og_rsv
                         break
 
-                table_v[row_cnt] = (
-                    gtype, group, pin, sc, arr, req, slk, attr,
-                    off, is_rsv, is_del, ugroup, is_ug_del)
-
-                self.cons_tables[fid][0] = (row_cnt:=row_cnt+1)
-                if (row_cnt & 127) == 0:
-                    new = pd.DataFrame(
-                            np.full((128, len(self._path_hd)), np.NaN),
-                            columns=self._path_hd, dtype='object')
-                    self.cons_tables[fid][1] = pd.concat(
-                            [self.cons_tables[fid][1], new], ignore_index=True)
-                    table_v = self.cons_tables[fid][1].values
+                table.add_row(None, '', 
+                    [gtype, group, pin, sc, arr, req, slk, attr, off, 
+                     is_rsv, is_del, ugroup, is_og_rsv])
 
             line, fno = fp.readline(), fno+1
         return fno
 
-    def get_summary_table(self) -> pd.DataFrame:
+    def _update_sum_table(self):
         """
-        Get summary table.
+        Update summary table.
+        """
+        stable = self.sum_tables
+        hid = None
+        # ctable.print()
+        # import pdb; pdb.set_trace()
+        ##bookmark
 
-        Returns
-        -------
-        sum_table : the summary table.
-        """
-        pass
+        for rid in range(rlen:=len(self.cons_tables)):
+            ctable = self.cons_tables[rid]
+            for r in range(ctable.max_row):
+                if (ptype:=ctable[r,'type']) not in stable:
+                    border = Border(False, False, False, False) if rlen == 1 \
+                                else Border(True, False, False, False)
+                    gtable = SimpleTable(heads=self._sum_hd,
+                                         border=border,
+                                         lsh=2, hpat='=', hcpat='=', 
+                                         cpat_alon=True)
+                    # gtable.set_head_attr(border=Border(left=False, right=False))
+
+                    if hid is None:
+                        hid = gtable.header.id
+
+                    gtable.header[hid['comm']].border = \
+                        Border(False, False, False, False)
+                    gtable.set_col_attr(hid['group'], width=self.gcol_w)
+
+                    if rlen > 1:
+                        for key in ('lwns', 'ltns', 'rwns', 'rtns', 
+                                    'dwns', 'dtns'):
+                            gtable.set_col_attr(hid[key], width=16)
+                        for key in ('lnvp', 'rnvp', 'dnvp'):
+                            gtable.set_col_attr(hid[key], width=6)
+                        for key in ('lwns', 'rwns', 'dwns'):
+                            gtable.header[hid[key]].border.left = True
+                        for key in ('lnvp', 'rnvp', 'dnvp'):
+                            gtable.header[hid[key]].border.right = True
+                    else:
+                        for key in ('lwns', 'ltns'):
+                            gtable.set_col_attr(hid[key], width=16)
+                        for key in ('lnvp',):
+                            gtable.set_col_attr(hid[key], width=6)
+
+                    stable[ptype] = gtable
+                else:
+                    gtable = stable[ptype]
+
+                pgroup = ptype if ptype in self._nogrp_cons \
+                            else ctable[r,'attr'] if ptype in self._clk_cons \
+                            else ctable[r,'group']
+
+                is_del = ctable[r,'is_del'] and not ctable[r,'is_rsv']
+                slk = 0.0 if is_del else ctable[r,'slk']
+                cnt = 0 if is_del else 1
+                rkey = f'{ptype}:{pgroup}'
+
+                if gtable.max_row == 0 or rkey not in gtable.index.id:
+                    gtable.add_row(
+                        key=rkey, title='', 
+                        data=[pgroup, slk, slk, cnt, 0, 0, 0, 0, 0, 0],
+                        )
+                        #border=Border(False, False, False, False))
+                    gtable.attr[-1, hid['comm']].border = \
+                        Border(False, False, False, False)
+                    if rlen > 1:
+                        for ckey in ('lwns', 'ltns', 'rwns', 'rtns', 
+                                    'dwns', 'dtns'):
+                            gtable.attr[-1,hid[ckey]].fs = '{:.4f}'
+                    else:
+                        for ckey in ('lwns', 'ltns'):
+                            gtable.attr[-1,hid[ckey]].fs = '{:.4f}'
+                else:
+                    if rid == 0:
+                        if slk < gtable[rkey, hid['lwns']]:
+                            gtable[rkey,hid['lwns']] = slk
+                        gtable[rkey, hid['ltns']] += slk
+                        gtable[rkey, hid['lnvp']] += cnt 
+                    else:
+                        if slk < gtable[rkey, hid['rwns']]:
+                            gtable[rkey, hid['rwns']] = slk
+                        gtable[rkey, hid['rtns']] += slk
+                        gtable[rkey, hid['rnvp']] += cnt 
+
+        if rlen == 1:
+            for table in stable.values():
+                for key in ('lwns', 'ltns', 'lnvp'):
+                    title = table.header[hid[key]].title
+                    table.header[hid[key]].title = title[:-3]
+        # else:
+        #     for table in stable.values():
+        #         for r in 
+
+

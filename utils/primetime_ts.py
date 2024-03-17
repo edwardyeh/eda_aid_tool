@@ -13,8 +13,7 @@ import re
 from dataclasses import dataclass, field
 from enum import IntEnum
 
-from simpletools.text import Align
-from simpletools.text import SimpleTable
+from simpletools.text import (Align, SimpleTable)
 
 
 @dataclass

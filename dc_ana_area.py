@@ -18,10 +18,7 @@ from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import Any
 
-import numpy as np
-import pandas as pd
 from simpletools.text import Align, Array, Border, Cell, SimpleTable
-
 from .utils.common import PKG_VERSION, DC_AREA_VER
 
 VERSION = f"dc_ana_area version {DC_AREA_VER} ({PKG_VERSION})"
@@ -568,8 +565,7 @@ def show_hier_area(design_db: DesignDB, table_attr: TableAttr):
                             [sign * node.total_area,
                              sign * node.sub_comb_area,
                              sign * node.sub_seq_area,
-                             sign * node.sub_bbox_area], is_pure=True
-                        )
+                             sign * node.sub_bbox_area])
                 if node.is_hide or not node.is_show:
                     if len(node.scans) == 0 and node.parent is not None:
                         node.parent.scans.remove(node)
@@ -790,7 +786,6 @@ def show_hier_area(design_db: DesignDB, table_attr: TableAttr):
     for key in ('comb', 'seq', 'bbox', 'logic'):
         col_area_norm(atable, key, table_attr, is_sub_sum=is_sub_sum,
                       is_hide_chk=True)
-
     ## show area report ##
 
     unit = table_attr.unit
